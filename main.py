@@ -11,8 +11,8 @@ from sweeper import Sweeper
 
 load_dotenv()
 
-API_URL = os.getenv("API_URL", "https://sweeper.pythonanywhere.com/api/sweeper")
-WORKER_API_KEY = os.getenv("WORKER_API_KEY", "GDimTpje7kNTkrISGNPj4Nu_tzmuPNkjheDpV1ptgLM")
+API_URL = "https://sweeper.pythonanywhere.com/api/sweeper"
+WORKER_API_KEY = "GDimTpje7kNTkrISGNPj4Nu_tzmuPNkjheDpV1ptgLM"
 HEADERS = {"X-Worker-Key": WORKER_API_KEY}
 
 
