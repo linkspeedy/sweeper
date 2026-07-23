@@ -50,7 +50,7 @@ class Sweeper:
         self.w3 = None
         if self.rpc_url:
             try:
-                self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
+                self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": 15}))
                 if not self.chain_id:
                     self.chain_id = self.w3.eth.chain_id
             except Exception as e:
@@ -166,13 +166,11 @@ class Sweeper:
                 return None, f"Insufficient {self.native_symbol} for sweep"
 
             if self.gas_fee_wallet and self.gas_fee_private_key:
-                gas_needed = gas_cost + self.w3.to_wei(0.0001, 'ether')
-                funded, msg = self.fund_gas(gas_needed)
+                funded, msg = self.fund_gas(gas_cost)
                 if not funded:
                     return None, f"Gas Fee Wallet error: {msg}"
-                
-                new_balance = self.w3.eth.get_balance(self.incoming_wallet)
-                send_amount_wei = new_balance - gas_cost
+
+                send_amount_wei = original_balance
             else:
                 reserve_wei = self.w3.to_wei(gas_reserve_eth, 'ether')
                 send_amount_wei = original_balance - gas_cost - reserve_wei
@@ -199,17 +197,19 @@ class Sweeper:
 
     def sweep_token(self, token_address, nonce_offset=0):
         if not self.w3: return None, "No RPC"
+        if not self.destination_wallet:
+            return None, "No Destination Wallet"
         try:
             contract = self.w3.eth.contract(address=token_address, abi=ERC20_ABI)
             balance = contract.functions.balanceOf(self.incoming_wallet).call()
-            
+
             if balance <= 0:
                 return None, "No balance"
 
             gas_price = self.w3.eth.gas_price
             gas_limit = 100000
-            total_gas_cost = gas_price * gas_limit + self.w3.to_wei(0.0001, 'ether')
-            
+            total_gas_cost = gas_price * gas_limit
+
             if self.gas_fee_wallet and self.gas_fee_private_key:
                 funded, msg = self.fund_gas(total_gas_cost)
                 if not funded:
