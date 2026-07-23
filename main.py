@@ -67,6 +67,24 @@ def report_manual_sweep_complete(status, txs=None, error=None):
         print(f"Failed to report manual sweep completion to Django API: {e}")
 
 
+def notify_telegram(config, message):
+    """Best-effort Telegram push for sweep-transaction events. Fully optional -
+    no-ops silently if either credential is unset - and must never let a
+    Telegram outage slow down or interrupt actual sweeping."""
+    token = config.get("telegram_bot_token")
+    chat_id = config.get("telegram_chat_id")
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        print(f"Failed to send Telegram notification: {e}")
+
+
 def build_sweeper(config):
     network = config.get("network")
     if not network:
@@ -131,6 +149,7 @@ def run_one_sweep(config, sweep_native=True):
             if token_balance > 0:
                 print(f"📥 Incoming token detected: {token_balance} at {t_addr}")
                 print(f"🔄 Sweeping token {t_addr}...")
+                notify_telegram(config, f"🔄 Sweeping token {t_addr}...")
 
             tx, msg = sw.sweep_token(t_addr, nonce_offset=nonce_offset)
             if tx:
@@ -138,14 +157,17 @@ def run_one_sweep(config, sweep_native=True):
                 nonce_offset += 1
                 log_activity(tx_hash=tx, token_address=t_addr, status="Success", message="Swept tokens")
                 print(f"✅ Swapped! Token sweep TX: {tx}")
+                notify_telegram(config, f"✅ Token sweep succeeded: {tx}")
             elif msg != "No balance":
                 print(f"Token sweep skipped ({t_addr}): {msg}")
+                notify_telegram(config, f"❌ Token sweep failed ({t_addr}): {msg}")
 
         if not sweep_native:
             return results, False
 
         if sw.w3.eth.get_balance(sw.incoming_wallet) > 1_000_000:
             print(f"🔄 Sweeping {sw.native_symbol}...")
+            notify_telegram(config, f"🔄 Sweeping {sw.native_symbol}...")
 
         native_failed = False
         tx, msg = sw.sweep_eth(gas_reserve_eth=config.get("gas_reserve", 0.00005))
@@ -153,8 +175,10 @@ def run_one_sweep(config, sweep_native=True):
             results.append(tx)
             log_activity(tx_hash=tx, status="Success", message=f"Swept {sw.native_symbol}")
             print(f"✅ Swapped! Native sweep TX: {tx}")
+            notify_telegram(config, f"✅ Native sweep succeeded: {tx}")
         elif msg != f"Insufficient {sw.native_symbol} for sweep":
             print(f"Native sweep skipped: {msg}")
+            notify_telegram(config, f"❌ Native sweep failed: {msg}")
             native_failed = True
 
         return results, native_failed
