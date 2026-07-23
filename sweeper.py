@@ -253,6 +253,7 @@ class Sweeper:
                 'chainId': self.chain_id
             })
             
+            
             signed_tx = self.w3.eth.account.sign_transaction(tx, self.private_key)
             raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
             tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
