@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -14,6 +15,16 @@ load_dotenv()
 API_URL = os.getenv("API_URL", "https://sweeper.pythonanywhere.com/api/sweeper")
 WORKER_API_KEY = os.getenv("WORKER_API_KEY", "GDimTpje7kNTkrISGNPj4Nu_tzmuPNkjheDpV1ptgLM")
 HEADERS = {"X-Worker-Key": WORKER_API_KEY}
+
+# How many blocks to wait after a deposit is first seen before sweeping it -
+# a small safety margin against the (rare, post-merge) chance the block
+# containing it gets reorged out. Manual "Sweep Now" bypasses this.
+CONFIRMATIONS_REQUIRED = 2
+
+# Manual "Sweep Now" (Flask thread) and the background auto-loop (main
+# thread) both ultimately call run_one_sweep for the same wallets - this
+# serializes them so they can't race each other's nonce lookups.
+sweep_lock = threading.Lock()
 
 
 def fetch_config():
@@ -108,44 +119,45 @@ def run_one_sweep(config, sweep_native=True):
     real error (not just "nothing to sweep") - the auto-loop uses this to
     keep retrying every subsequent block until it actually succeeds, instead
     of waiting for another fresh deposit to show up."""
-    sw = build_sweeper(config)
-    results = []
-    if not sw or not sw.w3:
-        return results, False
+    with sweep_lock:
+        sw = build_sweeper(config)
+        results = []
+        if not sw or not sw.w3:
+            return results, False
 
-    nonce_offset = 0
-    for t_addr in config.get("token_addresses", []):
-        token_balance = sw.get_token_data(t_addr).get("balance", 0)
-        if token_balance > 0:
-            print(f"📥 Incoming token detected: {token_balance} at {t_addr}")
-            print(f"🔄 Sweeping token {t_addr}...")
+        nonce_offset = 0
+        for t_addr in config.get("token_addresses", []):
+            token_balance = sw.get_token_data(t_addr).get("balance", 0)
+            if token_balance > 0:
+                print(f"📥 Incoming token detected: {token_balance} at {t_addr}")
+                print(f"🔄 Sweeping token {t_addr}...")
 
-        tx, msg = sw.sweep_token(t_addr, nonce_offset=nonce_offset)
+            tx, msg = sw.sweep_token(t_addr, nonce_offset=nonce_offset)
+            if tx:
+                results.append(tx)
+                nonce_offset += 1
+                log_activity(tx_hash=tx, token_address=t_addr, status="Success", message="Swept tokens")
+                print(f"✅ Swapped! Token sweep TX: {tx}")
+            elif msg != "No balance":
+                print(f"Token sweep skipped ({t_addr}): {msg}")
+
+        if not sweep_native:
+            return results, False
+
+        if sw.w3.eth.get_balance(sw.incoming_wallet) > 1_000_000:
+            print(f"🔄 Sweeping {sw.native_symbol}...")
+
+        native_failed = False
+        tx, msg = sw.sweep_eth(gas_reserve_eth=config.get("gas_reserve", 0.00005))
         if tx:
             results.append(tx)
-            nonce_offset += 1
-            log_activity(tx_hash=tx, token_address=t_addr, status="Success", message="Swept tokens")
-            print(f"✅ Swapped! Token sweep TX: {tx}")
-        elif msg != "No balance":
-            print(f"Token sweep skipped ({t_addr}): {msg}")
+            log_activity(tx_hash=tx, status="Success", message=f"Swept {sw.native_symbol}")
+            print(f"✅ Swapped! Native sweep TX: {tx}")
+        elif msg != f"Insufficient {sw.native_symbol} for sweep":
+            print(f"Native sweep skipped: {msg}")
+            native_failed = True
 
-    if not sweep_native:
-        return results, False
-
-    if sw.w3.eth.get_balance(sw.incoming_wallet) > 1_000_000:
-        print(f"🔄 Sweeping {sw.native_symbol}...")
-
-    native_failed = False
-    tx, msg = sw.sweep_eth(gas_reserve_eth=config.get("gas_reserve", 0.00005))
-    if tx:
-        results.append(tx)
-        log_activity(tx_hash=tx, status="Success", message=f"Swept {sw.native_symbol}")
-        print(f"✅ Swapped! Native sweep TX: {tx}")
-    elif msg != f"Insufficient {sw.native_symbol} for sweep":
-        print(f"Native sweep skipped: {msg}")
-        native_failed = True
-
-    return results, native_failed
+        return results, native_failed
 
 
 @app.route("/sweep-now", methods=["POST"])
@@ -168,6 +180,7 @@ def auto_loop():
     last_scanned_block = None
     last_network_id = None
     native_sweep_pending = False
+    pending_deposit_block = None
 
     while True:
         try:
@@ -200,21 +213,39 @@ def auto_loop():
                         last_scanned_block = None
                         last_network_id = network_id
                         native_sweep_pending = False
+                        pending_deposit_block = None
 
                     current_block = sw.w3.eth.block_number
                     if last_scanned_block is None:
                         last_scanned_block = current_block - 1
 
                     if current_block > last_scanned_block:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Block {current_block} scanned")
-                        incoming_detected = _detect_incoming_native(sw, current_block)
+                        # Walk every block since the last check, not just the
+                        # latest one - otherwise a slow cycle that falls
+                        # behind by more than one block would silently skip
+                        # scanning whichever blocks it missed.
+                        for block_num in range(last_scanned_block + 1, current_block + 1):
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Block {block_num} scanned")
+                            if pending_deposit_block is None and _detect_incoming_native(sw, block_num):
+                                pending_deposit_block = block_num
+                        last_scanned_block = current_block
+
+                        confirmed = (
+                            pending_deposit_block is not None
+                            and current_block - pending_deposit_block >= CONFIRMATIONS_REQUIRED
+                        )
+                        if pending_deposit_block is not None and not confirmed:
+                            remaining = CONFIRMATIONS_REQUIRED - (current_block - pending_deposit_block)
+                            print(f"⏳ Waiting for confirmations ({remaining} more block(s))...")
                         if native_sweep_pending:
                             print("🔁 Retrying previously failed sweep...")
+
                         _, native_failed = run_one_sweep(
-                            config, sweep_native=incoming_detected or native_sweep_pending
+                            config, sweep_native=confirmed or native_sweep_pending
                         )
                         native_sweep_pending = native_failed
-                        last_scanned_block = current_block
+                        if confirmed:
+                            pending_deposit_block = None
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] Waiting for new blocks...")
                 else:
