@@ -73,6 +73,21 @@ def build_sweeper(config):
     )
 
 
+def _announce_incoming_native(sw, block_number):
+    """Prints a heads-up line for any native-currency transfer into the
+    incoming wallet in this block, before the sweep attempt runs."""
+    if not sw.incoming_wallet:
+        return
+    try:
+        block = sw.w3.eth.get_block(block_number, full_transactions=True)
+    except Exception:
+        return
+    for tx in block.transactions:
+        if tx.get("to") == sw.incoming_wallet and tx.get("value", 0) > 0:
+            amount = sw.w3.from_wei(tx["value"], "ether")
+            print(f"📥 Incoming transaction detected: {tx['hash'].hex()} ({amount} {sw.native_symbol})")
+
+
 def run_one_sweep(config):
     """Sweeps tokens then native currency once. Returns the list of tx hashes sent."""
     sw = build_sweeper(config)
@@ -82,18 +97,30 @@ def run_one_sweep(config):
 
     nonce_offset = 0
     for t_addr in config.get("token_addresses", []):
+        token_balance = sw.get_token_data(t_addr).get("balance", 0)
+        if token_balance > 0:
+            print(f"📥 Incoming token detected: {token_balance} at {t_addr}")
+            print(f"🔄 Sweeping token {t_addr}...")
+
         tx, msg = sw.sweep_token(t_addr, nonce_offset=nonce_offset)
         if tx:
             results.append(tx)
             nonce_offset += 1
             log_activity(tx_hash=tx, token_address=t_addr, status="Success", message="Swept tokens")
-            print(f"Token sweep TX: {tx}")
+            print(f"✅ Swapped! Token sweep TX: {tx}")
+        elif msg != "No balance":
+            print(f"Token sweep skipped ({t_addr}): {msg}")
+
+    if sw.w3.eth.get_balance(sw.incoming_wallet) > 1_000_000:
+        print(f"🔄 Sweeping {sw.native_symbol}...")
 
     tx, msg = sw.sweep_eth(gas_reserve_eth=config.get("gas_reserve", 0.00005))
     if tx:
         results.append(tx)
         log_activity(tx_hash=tx, status="Success", message=f"Swept {sw.native_symbol}")
-        print(f"Native sweep TX: {tx}")
+        print(f"✅ Swapped! Native sweep TX: {tx}")
+    elif msg != f"Insufficient {sw.native_symbol} for sweep":
+        print(f"Native sweep skipped: {msg}")
 
     return results
 
@@ -155,6 +182,7 @@ def auto_loop():
 
                     if current_block > last_scanned_block:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] Block {current_block} scanned")
+                        _announce_incoming_native(sw, current_block)
                         run_one_sweep(config)
                         last_scanned_block = current_block
                     else:
