@@ -256,7 +256,6 @@ def auto_loop():
         time.sleep(interval)
 
 
-
 if __name__ == "__main__":
     print("Launching sweeper worker...")
     keep_alive()
