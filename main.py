@@ -11,8 +11,8 @@ from sweeper import Sweeper
 
 load_dotenv()
 
-API_URL = "https://sweeper.pythonanywhere.com/api/sweeper"
-WORKER_API_KEY = "GDimTpje7kNTkrISGNPj4Nu_tzmuPNkjheDpV1ptgLM"
+API_URL = os.getenv("API_URL", "https://sweeper.pythonanywhere.com/api/sweeper")
+WORKER_API_KEY = os.getenv("WORKER_API_KEY", "GDimTpje7kNTkrISGNPj4Nu_tzmuPNkjheDpV1ptgLM")
 HEADERS = {"X-Worker-Key": WORKER_API_KEY}
 
 
@@ -38,6 +38,22 @@ def log_activity(tx_hash=None, token_address=None, amount=None, status="Failed",
         )
     except requests.RequestException as e:
         print(f"Failed to log activity to Django API: {e}")
+
+
+def report_manual_sweep_complete(status, txs=None, error=None):
+    """Clears the manual_sweep_requested flag Django set from the dashboard's
+    Sweep Now button — Django can't call the worker directly (PythonAnywhere's
+    free tier blocks outbound requests), so it just flags the request and we
+    pick it up on our next regular poll instead. See core.views.sweep_now."""
+    try:
+        requests.post(
+            f"{API_URL}/manual-sweep-complete/",
+            headers=HEADERS,
+            json={"status": status, "txs": txs or [], "error": error},
+            timeout=15,
+        )
+    except requests.RequestException as e:
+        print(f"Failed to report manual sweep completion to Django API: {e}")
 
 
 def build_sweeper(config):
@@ -112,10 +128,22 @@ def auto_loop():
 
         interval = config.get("sweep_interval", 30)
 
-        if config.get("mode") == "auto" and config.get("network"):
+        if config.get("manual_sweep_requested"):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Manual sweep requested, running now...")
+            try:
+                results = run_one_sweep(config)
+                if results:
+                    report_manual_sweep_complete("done", txs=results)
+                else:
+                    report_manual_sweep_complete("error", error="No funds to sweep or failed checks")
+            except Exception as e:
+                print(f"Manual sweep error: {e}")
+                report_manual_sweep_complete("error", error=str(e))
+
+        elif config.get("mode") == "auto" and config.get("network"):
             sw = build_sweeper(config)
-            if sw and sw.w3 and sw.w3.is_connected():
-                try:
+            try:
+                if sw and sw.w3 and sw.w3.is_connected():
                     network_id = config["network"]["id"]
                     if network_id != last_network_id:
                         last_scanned_block = None
@@ -131,10 +159,10 @@ def auto_loop():
                         last_scanned_block = current_block
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] Waiting for new blocks...")
-                except Exception as e:
-                    print(f"Background scan error: {e}")
-            else:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Web3 provider failed to connect: {config['network'].get('rpc_url')}")
+                else:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Web3 provider failed to connect: {config['network'].get('rpc_url')}")
+            except Exception as e:
+                print(f"Background scan error: {e}")
 
         time.sleep(interval)
 
