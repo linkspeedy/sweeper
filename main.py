@@ -148,6 +148,7 @@ def run_one_sweep(config, sweep_native=True):
     return results, native_failed
 
 
+
 @app.route("/sweep-now", methods=["POST"])
 def sweep_now_endpoint():
     if request.headers.get("X-Worker-Key") != WORKER_API_KEY:
