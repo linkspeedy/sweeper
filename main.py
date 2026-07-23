@@ -9,6 +9,7 @@ from flask import jsonify, request
 from keep_alive import app, keep_alive
 from sweeper import Sweeper
 
+
 load_dotenv()
 
 API_URL = os.getenv("API_URL", "https://sweeper.pythonanywhere.com/api/sweeper")
