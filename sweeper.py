@@ -141,8 +141,12 @@ class Sweeper:
                     f"{self.w3.from_wei(own_tx_fee, 'ether')} for its own tx fee)."
                 )
 
-            nonce = self.w3.eth.get_transaction_count(self.gas_fee_wallet)
-            
+            # 'pending' includes this wallet's own not-yet-mined transactions,
+            # so a prior fund_gas call that hasn't confirmed yet doesn't get
+            # handed the same nonce again (which the node then rejects as
+            # "already known" or leaves stuck unconfirmed).
+            nonce = self.w3.eth.get_transaction_count(self.gas_fee_wallet, 'pending')
+
             tx = {
                 'nonce': nonce,
                 'to': self.incoming_wallet,
