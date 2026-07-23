@@ -126,7 +126,11 @@ class Sweeper:
             return False, "No GAS_FEE_WALLET configured."
         
         try:
-            gas_price = self.w3.eth.gas_price
+            # Bump the price for this transaction above the network's raw
+            # suggestion - a bare eth_gasPrice reading is often just enough
+            # to eventually get mined, not quickly, and a stuck-pending
+            # funding tx blocks the sweep behind it for up to 60s each time.
+            gas_price = int(self.w3.eth.gas_price * 1.2)
             own_tx_fee = 21000 * gas_price
             total_needed = required_gas_wei + own_tx_fee
 
