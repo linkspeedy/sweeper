@@ -180,7 +180,13 @@ class Sweeper:
                 if not funded:
                     return None, f"Gas Fee Wallet error: {msg}"
 
-                send_amount_wei = original_balance
+                # Re-check the real balance now that funding landed, instead
+                # of trusting the pre-funding read - a load-balanced public
+                # RPC can serve a stale balance from a lagging replica, and
+                # building the tx off that risks trying to resend money that
+                # a previous sweep already moved.
+                current_balance = self.w3.eth.get_balance(self.incoming_wallet)
+                send_amount_wei = current_balance - gas_cost
             else:
                 reserve_wei = self.w3.to_wei(gas_reserve_eth, 'ether')
                 send_amount_wei = original_balance - gas_cost - reserve_wei
