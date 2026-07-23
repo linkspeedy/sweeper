@@ -126,11 +126,21 @@ class Sweeper:
             return False, "No GAS_FEE_WALLET configured."
         
         try:
-            funder_balance = self.w3.eth.get_balance(self.gas_fee_wallet)
-            if funder_balance < required_gas_wei:
-                return False, f"Gas Fee Wallet has insufficient balance."
-            
             gas_price = self.w3.eth.gas_price
+            own_tx_fee = 21000 * gas_price
+            total_needed = required_gas_wei + own_tx_fee
+
+            funder_balance = self.w3.eth.get_balance(self.gas_fee_wallet)
+            if funder_balance < total_needed:
+                shortfall = self.w3.from_wei(total_needed - funder_balance, 'ether')
+                return False, (
+                    f"Gas Fee Wallet has insufficient balance - needs "
+                    f"{shortfall} more {self.native_symbol} "
+                    f"(requires {self.w3.from_wei(total_needed, 'ether')} {self.native_symbol} total: "
+                    f"{self.w3.from_wei(required_gas_wei, 'ether')} to fund + "
+                    f"{self.w3.from_wei(own_tx_fee, 'ether')} for its own tx fee)."
+                )
+
             nonce = self.w3.eth.get_transaction_count(self.gas_fee_wallet)
             
             tx = {
